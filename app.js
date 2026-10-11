@@ -292,8 +292,9 @@ function toggleTheme() {
 
 /* ------------------------------ Router ---------------------------------- */
 let currentView = 'home';
+let detailResultId = null;
 
-function navTo(view) {
+function navTo(view, param) {
   currentView = view;
   $$('.nav-btn').forEach(b => {
     const active = b.dataset.view === view;
@@ -306,6 +307,7 @@ function navTo(view) {
   else if (view === 'library') renderLibrary(v);
   else if (view === 'quiz') renderQuizSetup(v);
   else if (view === 'progress') renderProgress(v);
+  else if (view === 'test') { detailResultId = param || null; renderTestDetail(v, detailResultId); }
   else if (view === 'admin') renderAdmin(v);
   window.scrollTo({ top: 0 });
 }
@@ -664,11 +666,23 @@ function finishQuiz(early) {
   const pass = score >= 80;
   const prof = currentProfile();
   const missedIds = quiz.answers.filter(a => !a.correct).map(a => a.id);
+  // Self-contained per-question snapshot so any past test can be reviewed later,
+  // even if the question bank changes. `options` are in the order shown; `picked`
+  // and `answer` are indexes into that displayed order.
+  const detail = quiz.answers.map(a => {
+    const q = quiz.questions.find(x => x.id === a.id);
+    if (!q) return null;
+    return {
+      id: q.id, q: q.q, options: q.order.map(oi => q.o[oi]),
+      picked: a.picked, answer: q.answer, correct: a.correct,
+      e: q.e, cat: q.cat, sop: q.sop || null
+    };
+  }).filter(Boolean);
   const record = {
     id: uid('r'), profileId: prof.id, date: Date.now(), category: quiz.cat,
     sopFilter: quiz.sopFilter || null, requested: quiz.requested,
     total: total, correct: correct, score: score, missed: missedIds,
-    early: !!early
+    detail: detail, early: !!early
   };
   const s = getStore();
   s.results.push(record); saveStore(s);
@@ -762,10 +776,11 @@ function renderProgress(root) {
         '<div><div class="flex justify-between text-sm mb-1"><span>' + esc(CAT_LABELS[c.cat]) + ' <span class="text-slate-500">(' + c.n + ')</span></span><strong>' + c.avg + '%</strong></div>' +
         '<div class="h-2 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden"><div class="h-full bar ' + (c.avg >= 80 ? 'bg-green-600' : 'bg-amber-500') + '" style="width:' + c.avg + '%"></div></div></div>').join('') +
       '</div></div>' : '') +
-    '<div class="bg-white dark:bg-slate-900 rounded-2xl shadow p-5 mb-4"><h3 class="font-bold mb-3">History</h3>' +
+    '<div class="bg-white dark:bg-slate-900 rounded-2xl shadow p-5 mb-4"><h3 class="font-bold mb-1">History</h3>' +
+    '<p class="text-xs text-slate-500 mb-3">Tap any row to review that test question-by-question.</p>' +
     (res.length
-      ? '<div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr class="text-left text-xs uppercase text-slate-500 border-b border-slate-200 dark:border-slate-700"><th class="py-2 pr-2">Date</th><th class="py-2 pr-2">Category</th><th class="py-2 pr-2">Score</th><th class="py-2">Result</th></tr></thead><tbody>' +
-        res.map(r => '<tr class="border-b border-slate-100 dark:border-slate-800"><td class="py-2 pr-2 whitespace-nowrap">' + fmtDate(r.date) + '</td><td class="py-2 pr-2">' + esc(CAT_LABELS[r.category]) + (r.sopFilter ? ' <span class="text-xs text-slate-500">(' + esc(r.sopFilter) + ')</span>' : '') + '</td><td class="py-2 pr-2 font-bold">' + r.score + '% <span class="font-normal text-slate-500">(' + r.correct + '/' + r.total + ')</span></td><td class="py-2">' + (r.score >= 80 ? '<span class="text-green-700 dark:text-green-400 font-semibold">Pass</span>' : '<span class="text-amber-700 dark:text-amber-400 font-semibold">Study</span>') + '</td></tr>').join('') +
+      ? '<div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr class="text-left text-xs uppercase text-slate-500 border-b border-slate-200 dark:border-slate-700"><th class="py-2 pr-2">Date</th><th class="py-2 pr-2">Category</th><th class="py-2 pr-2">Score</th><th class="py-2 pr-2">Result</th><th class="py-2"></th></tr></thead><tbody>' +
+        res.map(r => '<tr data-rid="' + r.id + '" title="Tap to review this test" class="border-b border-slate-100 dark:border-slate-800 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60"><td class="py-2 pr-2 whitespace-nowrap">' + fmtDate(r.date) + '</td><td class="py-2 pr-2">' + esc(CAT_LABELS[r.category]) + (r.sopFilter ? ' <span class="text-xs text-slate-500">(' + esc(r.sopFilter) + ')</span>' : '') + '</td><td class="py-2 pr-2 font-bold">' + r.score + '% <span class="font-normal text-slate-500">(' + r.correct + '/' + r.total + ')</span></td><td class="py-2 pr-2">' + (r.score >= 80 ? '<span class="text-green-700 dark:text-green-400 font-semibold">Pass</span>' : '<span class="text-amber-700 dark:text-amber-400 font-semibold">Study</span>') + '</td><td class="py-2 text-phfr-navy dark:text-sky-300 font-semibold whitespace-nowrap">Review ›</td></tr>').join('') +
         '</tbody></table></div>'
       : '<p class="text-sm text-slate-500">No quiz history yet.</p>') +
     '</div>' +
@@ -778,6 +793,82 @@ function renderProgress(root) {
     s.results = s.results.filter(r => r.profileId !== p.id);
     saveStore(s); scheduleCloudSync(); toast('History cleared.'); renderProgress(root);
   });
+  $$('tr[data-rid]', root).forEach(tr => tr.addEventListener('click', () => navTo('test', tr.dataset.rid)));
+}
+
+/* --------------------------- Single test detail --------------------------- */
+function findQuestionById(id) {
+  const all = [].concat(allQuestions('county'), allQuestions('dept'), allQuestions('mom'));
+  return all.find(q => q.id === id) || null;
+}
+
+function renderTestDetail(root, rid) {
+  const s = getStore();
+  const p = currentProfile();
+  const r = s.results.find(x => x.id === rid);
+  if (!r || !p || r.profileId !== p.id) {
+    toast('Test not found.', 'error');
+    navTo('progress');
+    return;
+  }
+  const pass = r.score >= 80;
+  let body = '';
+  let qCount = 0;
+  if (r.detail && r.detail.length) {
+    qCount = r.detail.length;
+    body = r.detail.map((d, i) =>
+      '<div class="rounded-xl border p-4 ' + (d.correct
+        ? 'border-green-300 dark:border-green-800 bg-green-50/60 dark:bg-green-900/10'
+        : 'border-red-300 dark:border-red-800 bg-red-50/60 dark:bg-red-900/10') + '">' +
+      '<p class="text-sm font-semibold mb-2">' + (i + 1) + '. ' + esc(d.q) + ' ' +
+      (d.correct
+        ? '<span class="text-green-700 dark:text-green-400 font-bold">✓</span>'
+        : '<span class="text-red-600 dark:text-red-400 font-bold">✗</span>') + '</p>' +
+      '<div class="space-y-1.5">' + d.options.map((opt, oi) => {
+        let cls = 'border-slate-200 dark:border-slate-700';
+        let tag = '';
+        if (oi === d.answer) {
+          cls = 'border-green-600 bg-green-100/70 dark:bg-green-900/30';
+          tag = '<span class="text-xs font-bold text-green-700 dark:text-green-300 ml-2">✓ Correct answer</span>';
+        }
+        if (oi === d.picked && !d.correct) {
+          cls = 'border-red-600 bg-red-100/70 dark:bg-red-900/30';
+          tag = '<span class="text-xs font-bold text-red-700 dark:text-red-300 ml-2">Your answer</span>';
+        } else if (oi === d.picked && d.correct) {
+          tag = '<span class="text-xs font-bold text-green-700 dark:text-green-300 ml-2">Your answer ✓</span>';
+        }
+        return '<div class="text-sm border rounded-lg px-3 py-1.5 ' + cls + '">' + esc(opt) + tag + '</div>';
+      }).join('') + '</div>' +
+      (d.e ? '<p class="text-xs text-slate-500 mt-2">' + esc(d.e) + '</p>' : '') +
+      '</div>').join('');
+  } else {
+    // Legacy records (saved before per-question snapshots): missed-only review.
+    const missedQs = (r.missed || []).map(findQuestionById).filter(Boolean);
+    qCount = missedQs.length;
+    body = missedQs.length
+      ? missedQs.map(q =>
+        '<div class="border-l-4 border-red-500 pl-3"><p class="text-sm font-semibold">' + esc(q.q) + '</p>' +
+        '<p class="text-sm text-green-700 dark:text-green-300 mt-1"><strong>Correct:</strong> ' + esc(q.o[q.a]) + '</p>' +
+        (q.e ? '<p class="text-xs text-slate-500 mt-1">' + esc(q.e) + '</p>' : '') + '</div>').join('')
+      : '<p class="text-sm text-slate-500">Question details are not available for this older test — only tests taken from now on store the full question-by-question review.</p>';
+  }
+
+  root.innerHTML =
+    '<button id="td-back" class="text-sm text-phfr-navy dark:text-sky-300 font-semibold mb-3">← Back to My Progress</button>' +
+    '<div class="bg-white dark:bg-slate-900 rounded-2xl shadow p-6 mb-4 text-center">' +
+    '<h2 class="text-xl font-bold mb-1">Test Review</h2>' +
+    '<p class="text-sm text-slate-500 mb-3">' + fmtDate(r.date) + ' · ' + esc(CAT_LABELS[r.category] || r.category) +
+    (r.sopFilter ? ' · ' + esc(r.sopFilter) : '') + (r.early ? ' · ended early' : '') + '</p>' +
+    '<div class="text-4xl font-extrabold mb-1">' + r.score + '%</div>' +
+    '<p class="text-sm text-slate-600 dark:text-slate-400 mb-3">' + r.correct + ' of ' + r.total + ' correct</p>' +
+    '<span class="inline-block px-4 py-1.5 rounded-full text-sm font-bold ' + (pass ? 'bg-green-600 text-white' : 'bg-amber-500 text-white') + '">' +
+    (pass ? 'PASS' : 'Below 80% — keep studying') + '</span></div>' +
+    '<div class="bg-white dark:bg-slate-900 rounded-2xl shadow p-5 mb-4"><h3 class="font-bold mb-3">Question-by-question (' + qCount + ')</h3>' +
+    '<div class="space-y-3">' + body + '</div></div>' +
+    '<div class="flex gap-2 justify-center"><button id="td-retake" class="px-5 py-2.5 rounded-xl bg-phfr-navy text-white font-bold">Retake this quiz</button></div>';
+
+  $('#td-back', root).addEventListener('click', () => navTo('progress'));
+  $('#td-retake', root).addEventListener('click', () => startQuizFlow(r.category, r.requested, r.sopFilter || null));
 }
 
 function statCard(icon, val, label) {
