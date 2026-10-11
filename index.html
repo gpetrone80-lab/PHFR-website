@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Palm Harbor Fire Rescue — SOP &amp; EMS Reference Hub</title>
+<meta name="description" content="Department reference and quiz hub for Palm Harbor Fire Rescue personnel: County SOPs (600 series), Department SOPs, and EMS Medical SOPs (MOMs), with interactive testing and progress tracking.">
+<meta name="theme-color" content="#0f2a4a" id="meta-theme">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" href="assets/icon-192.png">
+<link rel="apple-touch-icon" href="assets/icon-192.png">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: { extend: {
+      colors: { phfr: { navy:'#0f2a4a', gold:'#c9a227', red:'#b91c1c' } },
+      fontFamily: { sans: ['system-ui','-apple-system','Segoe UI','Roboto','Helvetica','Arial','sans-serif'] }
+    } }
+  };
+</script>
+<style>
+  .card-hover { transition: transform .15s ease, box-shadow .15s ease; }
+  .card-hover:hover { transform: translateY(-2px); }
+  .opt-btn { transition: background-color .12s ease, border-color .12s ease; }
+  .fade-in { animation: fadeIn .18s ease; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px);} to { opacity: 1; transform: none;} }
+  .bar { transition: width .5s ease; }
+  #modal-root:empty { display: none; }
+  .tab-active { border-color: #c9a227 !important; color: inherit !important; }
+  .line-clamp-2 { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  ::-webkit-scrollbar { width:10px; height:10px; }
+  ::-webkit-scrollbar-thumb { background:#94a3b8; border-radius:6px; }
+</style>
+</head>
+<body class="bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100 font-sans min-h-screen flex flex-col">
+
+<!-- ============ HEADER ============ -->
+<header class="sticky top-0 z-40 bg-phfr-navy dark:bg-slate-900 text-white shadow-lg border-b-4 border-phfr-gold">
+  <div class="max-w-6xl mx-auto px-3 sm:px-4 py-2 flex items-center gap-3">
+    <img src="assets/dept-logo.png" alt="Palm Harbor Fire Rescue department shield" class="h-12 w-12 sm:h-14 sm:w-14 object-contain rounded-full bg-white/5 shrink-0">
+    <div class="min-w-0 flex-1">
+      <h1 class="text-base sm:text-xl font-bold leading-tight truncate">Palm Harbor Fire Rescue</h1>
+      <p class="text-[11px] sm:text-xs text-slate-300 leading-tight">SOP &amp; EMS Reference Hub</p>
+    </div>
+    <div id="user-chip" class="hidden sm:block"></div>
+    <button id="theme-toggle" class="p-2 rounded-lg hover:bg-white/10" aria-label="Toggle dark or light mode" title="Dark / light mode">
+      <span id="theme-icon">🌙</span>
+    </button>
+    <button id="auth-btn" class="text-xs sm:text-sm bg-phfr-gold text-phfr-navy font-semibold px-3 py-2 rounded-lg hover:brightness-110 whitespace-nowrap">Sign in</button>
+  </div>
+  <nav class="max-w-6xl mx-auto px-3 sm:px-4 pb-2 flex gap-1 overflow-x-auto text-sm" aria-label="Main navigation">
+    <button data-view="home" class="nav-btn px-3 py-1.5 rounded-md hover:bg-white/10 font-medium whitespace-nowrap">Home</button>
+    <button data-view="library" class="nav-btn px-3 py-1.5 rounded-md hover:bg-white/10 font-medium whitespace-nowrap">Library</button>
+    <button data-view="quiz" class="nav-btn px-3 py-1.5 rounded-md hover:bg-white/10 font-medium whitespace-nowrap">Quiz</button>
+    <button data-view="progress" class="nav-btn px-3 py-1.5 rounded-md hover:bg-white/10 font-medium whitespace-nowrap">My Progress</button>
+    <button data-view="admin" class="nav-btn px-3 py-1.5 rounded-md hover:bg-white/10 font-medium whitespace-nowrap">Admin</button>
+  </nav>
+</header>
+
+<!-- ============ MAIN VIEW ============ -->
+<main id="view" class="flex-1 w-full max-w-6xl mx-auto px-3 sm:px-4 py-4 sm:py-6"></main>
+
+<!-- ============ FOOTER ============ -->
+<footer class="border-t border-slate-300 dark:border-slate-800 mt-6">
+  <div class="max-w-6xl mx-auto px-4 py-4 text-xs text-slate-500 dark:text-slate-400 text-center leading-relaxed">
+    <p><strong>For official Palm Harbor Fire Rescue use only.</strong> Always defer to current SOPs and Pinellas County EMS protocols.</p>
+    <p class="mt-1">Reference &amp; training aid — not a substitute for the official documents. Works offline after first load.</p>
+  </div>
+</footer>
+
+<div id="modal-root"></div>
+<div id="toast-root" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 space-y-2 w-max max-w-[92vw]"></div>
+
+<script src="firebase-config.js"></script>
+<script src="app.js"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW registration failed:', err));
+    });
+  }
+</script>
+</body>
+</html>
