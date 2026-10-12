@@ -59,25 +59,58 @@ function toast(msg, kind) {
   setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .3s'; setTimeout(() => el.remove(), 350); }, 2600);
 }
 
-function downloadFile(filename, content, mime) {
+function isMobileDevice() {
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
+}
+/* Try to get a file to the user: native share sheet on phones, anchor
+   download otherwise. Returns a promise resolving true if a share/download
+   was launched. */
+function shareOrDownload(filename, content, mime) {
   const blob = new Blob([content], { type: mime || 'application/octet-stream' });
-  // On phones the native share sheet is far more reliable than a synthetic
+  // Phones: the native share sheet is far more reliable than a synthetic
   // anchor click (mobile browsers often swallow programmatic downloads).
   try {
     if (navigator.share && navigator.canShare) {
       const file = new File([blob], filename, { type: blob.type });
       if (navigator.canShare({ files: [file] })) {
-        navigator.share({ files: [file], title: filename }).catch(() => {});
-        return;
+        return navigator.share({ files: [file], title: filename }).then(() => true, () => false);
       }
     }
   } catch (e) {}
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 400);
+  try {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 400);
+    return Promise.resolve(!isMobileDevice()); // desktop: anchor download works
+  } catch (e) {}
+  return Promise.resolve(false);
+}
+function downloadFile(filename, content, mime) {
+  // Back-compat wrapper; prefer shareOrDownload for new code.
+  shareOrDownload(filename, content, mime);
+}
+/* Bulletproof fallback: copy text to the clipboard (works everywhere). */
+function copyTextToClipboard(text, okMsg) {
+  const done = () => toast(okMsg || 'Copied to clipboard.');
+  const fail = () => toast('Copy failed — long-press to select manually.', 'error');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done, fail));
+  } else fallbackCopy(text, done, fail);
+}
+function fallbackCopy(text, done, fail) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    if (ok) done(); else fail();
+  } catch (e) { fail(); }
 }
 
 function csvCell(v) {
@@ -1889,23 +1922,34 @@ function renderQGenReview(area, doc) {
 }
 
 /* ------------------------------ Admin: data -------------------------------- */
+function buildScoresCSV() {
+  const st = getStore();
+  if (!st.results.length) return '';
+  const nameOf = id => { const p = st.profiles.find(p => p.id === id); return p ? p.name : '(removed)'; };
+  const rows = [['Name', 'Date', 'Category', 'SOP filter', 'Correct', 'Total', 'Score %', 'Missed count']];
+  st.results.forEach(r => rows.push([nameOf(r.profileId), r.date ? new Date(r.date).toISOString() : '', CAT_LABELS[r.category] || r.category || '', r.sopFilter || '', r.correct || 0, r.total || 0, r.score || 0, (r.missed || []).length]));
+  return rows.map(r => r.map(csvCell).join(',')).join('\n');
+}
 function renderAdminData(body) {
   body.innerHTML =
     '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">' +
     '<div class="bg-white dark:bg-slate-900 rounded-2xl shadow p-5"><h3 class="font-bold mb-2">Export / Import</h3>' +
     '<p class="text-sm text-slate-600 dark:text-slate-400 mb-3">Full backup of profiles, quiz results, custom questions, and uploaded documents (JSON).</p>' +
     '<div class="flex flex-wrap gap-2"><button id="data-export" class="px-4 py-2 rounded-lg bg-phfr-navy text-white text-sm font-bold">Export JSON</button>' +
+    '<button id="data-export-copy" class="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-sm font-semibold">Copy</button>' +
     '<label class="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-sm font-semibold cursor-pointer">Import JSON<input id="data-import" type="file" accept=".json" class="hidden"></label></div></div>' +
     '<div class="bg-white dark:bg-slate-900 rounded-2xl shadow p-5"><h3 class="font-bold mb-2">Score report</h3>' +
     '<p class="text-sm text-slate-600 dark:text-slate-400 mb-3">Download every quiz result as a CSV spreadsheet.</p>' +
-    '<button id="data-csv" class="px-4 py-2 rounded-lg bg-green-700 text-white text-sm font-bold">Export scores CSV</button></div>' +
+    '<div class="flex flex-wrap gap-2"><button id="data-csv" class="px-4 py-2 rounded-lg bg-green-700 text-white text-sm font-bold">Export scores CSV</button>' +
+    '<button id="data-csv-copy" class="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-sm font-semibold">Copy</button></div></div>' +
     '<div class="bg-white dark:bg-slate-900 rounded-2xl shadow p-5 sm:col-span-2 border-2 border-red-200 dark:border-red-900"><h3 class="font-bold mb-2 text-red-700 dark:text-red-400">Danger zone</h3>' +
     '<p class="text-sm text-slate-600 dark:text-slate-400 mb-3">Delete ALL app data on this device: profiles, results, uploads, custom questions, and the admin password.</p>' +
     '<button id="data-reset" class="px-4 py-2 rounded-lg bg-red-700 text-white text-sm font-bold">Reset all data</button></div></div>';
 
   $('#data-export').addEventListener('click', () => {
-    downloadFile('phfr-hub-backup-' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify(getStore(), null, 2), 'application/json');
-    toast('Backup exported.');
+    shareOrDownload('phfr-hub-backup-' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify(getStore(), null, 2), 'application/json').then(ok => {
+      toast(ok ? 'Backup exported.' : 'Export may not have worked — tap Copy instead.', ok ? undefined : 'error');
+    });
   });
   $('#data-import').addEventListener('change', async (e) => {
     const f = e.target.files[0];
@@ -1921,13 +1965,21 @@ function renderAdminData(body) {
       saveStore(st); scheduleCloudSync(); toast('Import merged.');
     } catch (err) { toast('Import failed: not valid JSON.', 'error'); }
   });
+  const csvName = () => 'phfr-hub-scores-' + new Date().toISOString().slice(0, 10) + '.csv';
   $('#data-csv').addEventListener('click', () => {
-    const st = getStore();
-    const nameOf = id => { const p = st.profiles.find(p => p.id === id); return p ? p.name : '(removed)'; };
-    const rows = [['Name', 'Date', 'Category', 'SOP filter', 'Correct', 'Total', 'Score %', 'Missed count']];
-    st.results.forEach(r => rows.push([nameOf(r.profileId), r.date ? new Date(r.date).toISOString() : '', CAT_LABELS[r.category] || r.category || '', r.sopFilter || '', r.correct || 0, r.total || 0, r.score || 0, (r.missed || []).length]));
-    downloadFile('phfr-hub-scores-' + new Date().toISOString().slice(0, 10) + '.csv', rows.map(r => r.map(csvCell).join(',')).join('\n'), 'text/csv');
-    toast('CSV exported.');
+    const csv = buildScoresCSV();
+    if (!csv) return toast('No quiz results to export.', 'error');
+    shareOrDownload(csvName(), csv, 'text/csv').then(ok => {
+      toast(ok ? 'CSV exported.' : 'Export may not have worked — tap Copy instead.', ok ? undefined : 'error');
+    });
+  });
+  $('#data-csv-copy').addEventListener('click', () => {
+    const csv = buildScoresCSV();
+    if (!csv) return toast('No quiz results to export.', 'error');
+    copyTextToClipboard(csv, 'Scores CSV copied — paste it into Notes, email, or Excel.');
+  });
+  $('#data-export-copy').addEventListener('click', () => {
+    copyTextToClipboard(JSON.stringify(getStore(), null, 2), 'Backup JSON copied to clipboard.');
   });
   $('#data-reset').addEventListener('click', () => {
     const c1 = confirm('Really delete ALL data? This cannot be undone.');
