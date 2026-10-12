@@ -19,10 +19,10 @@
  * ========================================================================== */
 
 window.FIREBASE_CONFIG = {
-  apiKey: "PASTE_YOUR_API_KEY",
-  authDomain: "PASTE_YOUR_PROJECT.firebaseapp.com",
-  projectId: "PASTE_YOUR_PROJECT_ID",
-  storageBucket: "PASTE_YOUR_PROJECT.appspot.com",
-  messagingSenderId: "PASTE_SENDER_ID",
-  appId: "PASTE_APP_ID"
+  apiKey: "AIzaSyD7xTuVQPhMKs62RBp6S7Qg_wv8NUlmV-s",
+  authDomain: "phfr-hub.firebaseapp.com",
+  projectId: "phfr-hub",
+  storageBucket: "phfr-hub.firebasestorage.app",
+  messagingSenderId: "240282189891",
+  appId: "1:240282189891:web:4a1d9ce025b253c55ed4f6"
 };
