@@ -78,19 +78,29 @@ const MOM_URL = 'https://pcemsomd.com/...';
 ## Firebase cloud sync (optional)
 
 The app is local-first (everything in `localStorage` under key `phfr_hub_v1`) and
-works with no backend. To sync profiles and quiz results to Firestore:
+works with no backend. To sync profiles, quiz results, and deletion tombstones
+to Firestore (so members keep progress across devices and the Admin Portal sees
+everyone):
 
-1. Create a Firebase project and add a Web App; copy the config values into
-   `firebase-config.js` (replace the `PASTE_…` placeholders).
-2. Create Firestore collections `users` and `quizResults`.
-3. Publish Firestore rules that permit the writes your department policy allows
-   (e.g. authenticated read/write on those collections).
-4. Redeploy — `app.js` detects the config, loads the Firebase compat SDKs, pulls
-   cloud records once at startup (additive merge by id), and pushes local changes
-   with a short debounce.
+1. Create a Firebase project at https://console.firebase.google.com and add a
+   Web App (`</>`); copy the config values into `firebase-config.js`
+   (replace the `PASTE_…` placeholders).
+2. In the console: **Build > Firestore Database > Create database**.
+3. **Build > Authentication > Sign-in method** > enable **Anonymous**.
+4. **Firestore Database > Rules**: paste the contents of `firestore.rules`
+   (in this repo) and **Publish**. The app uses collections `phfr_profiles`,
+   `phfr_results`, and `phfr_tombstones` — they are created automatically on
+   first sync; no manual collection setup needed.
+5. Redeploy — `app.js` detects the config, loads the Firebase compat SDKs,
+   signs in anonymously, pulls cloud records once at startup (additive merge
+   by id, honoring deletion tombstones), and pushes local changes with a
+   short debounce. The Admin Portal's **☁️ Cloud** tab shows sync status,
+   cloud counts, and a manual "Sync now" button.
 
-> Note: syncing across devices is a convenience layer. Treat Firestore rules as
-> the access control — anyone with the app could otherwise read shared data.
+> Privacy trade-off: any signed-in app session can read member names and quiz
+> scores (that's what makes cross-device sign-in and the admin dashboard work).
+> PINs are salted SHA-256 hashes verified on-device — the raw PIN never leaves
+> the member's phone.
 
 ## PWA / offline notes
 

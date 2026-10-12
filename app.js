@@ -1,7 +1,7 @@
 /* ============================================================================
  * Palm Harbor Fire Rescue — SOP & EMS Reference Hub
  * app.js — single-file application logic (rendered into #view)
- * Storage key: phfr_hub_v1 (localStorage). Optional Firestore sync via
+ * Storage key: phfr_hub_v1 (localStorage). Optional Firebase web sync via
  * firebase-config.js when window.FIREBASE_CONFIG is populated.
  * ========================================================================== */
 'use strict';
@@ -689,7 +689,7 @@ function allQuestions(cat) {
 const STORE_KEY = 'phfr_hub_v1';
 
 function defaultStore() {
-  return { profiles: [], currentProfileId: null, results: [], customQuestions: [], customDocs: [], admin: null };
+  return { profiles: [], currentProfileId: null, results: [], customQuestions: [], customDocs: [], admin: null, tombstones: [] };
 }
 
 function getStore() {
@@ -1492,7 +1492,7 @@ async function renderAdmin(root) {
     return;
   }
   // Authenticated admin shell
-  const tabs = [['dashboard', '📊 Dashboard'], ['users', '👥 Users'], ['docs', '📄 Documents'], ['data', '💾 Data']];
+  const tabs = [['dashboard', '📊 Dashboard'], ['users', '👥 Users'], ['docs', '📄 Documents'], ['data', '💾 Data'], ['cloud', '☁️ Cloud']];
   root.innerHTML =
     '<div class="flex items-center justify-between mb-4"><h2 class="text-xl font-bold">Admin Portal</h2>' +
     '<button id="adm-lock" class="text-sm px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700">Lock</button></div>' +
@@ -1506,7 +1506,49 @@ async function renderAdmin(root) {
   if (adminTab === 'dashboard') renderAdminDashboard(body);
   else if (adminTab === 'users') renderAdminUsers(body);
   else if (adminTab === 'docs') renderAdminDocs(body);
+  else if (adminTab === 'cloud') renderAdminCloud(body);
   else renderAdminData(body);
+}
+
+function renderAdminCloud(body) {
+  const s = getStore();
+  const lastSync = cloudLastSync ? fmtDate(cloudLastSync) : 'never';
+  let html =
+    '<div class="bg-white dark:bg-slate-900 rounded-2xl shadow p-5 mb-4">' +
+    '<h3 class="font-bold mb-2">Web sync (Firebase)</h3>' +
+    '<p class="text-sm text-slate-600 dark:text-slate-400">Status: <strong>' + esc(cloudStatusText()) + '</strong></p>' +
+    '<p class="text-sm text-slate-600 dark:text-slate-400">Last sync: ' + esc(lastSync) + '</p>' +
+    '<p class="text-sm text-slate-600 dark:text-slate-400">On this device: ' + s.profiles.length + ' profiles · ' + s.results.length + ' quiz results</p>' +
+    '<p class="text-sm text-slate-600 dark:text-slate-400" id="cloud-counts">In the cloud: checking…</p>' +
+    '<div class="flex gap-2 mt-4">' +
+    '<button id="cloud-sync" class="px-5 py-2 rounded-lg bg-phfr-navy text-white font-bold text-sm">Sync now</button>' +
+    '</div></div>';
+  html += '<div class="bg-white dark:bg-slate-900 rounded-2xl shadow p-5 text-sm text-slate-600 dark:text-slate-400">' +
+    'Member progress syncs automatically after each quiz. PINs are salted hashes verified on-device — the cloud never sees a raw PIN. ' +
+    'Anyone with the app link can read member names and scores (same exposure as the shared app link itself).</div>';
+  body.innerHTML = html;
+  $('#cloud-sync', body).addEventListener('click', async () => {
+    toast('Syncing…');
+    await pullFirebaseOnce().catch(() => {});
+    await pushFirebase().catch(() => {});
+    renderAdminCloud(body);
+    toast(cloudState === 'ready' ? 'Sync complete.' : 'Sync issue — ' + cloudStatusText(), cloudState === 'ready' ? 'ok' : 'error');
+  });
+  if (cloud) {
+    (async () => {
+      try {
+        const [pp, rr] = await Promise.all([
+          cloud.db.collection('phfr_profiles').get(),
+          cloud.db.collection('phfr_results').get()
+        ]);
+        const el = $('#cloud-counts', body);
+        if (el) el.textContent = 'In the cloud: ' + pp.size + ' profiles · ' + rr.size + ' quiz results';
+      } catch (e) {
+        const el = $('#cloud-counts', body);
+        if (el) el.textContent = 'In the cloud: unavailable (' + (e.message || 'error') + ')';
+      }
+    })();
+  }
 }
 
 function renderAdminDashboard(body) {
@@ -1575,6 +1617,7 @@ function renderAdminUsers(body) {
     const prof = st.profiles.find(p => p.id === b.dataset.del);
     if (!prof) return;
     if (!confirm('Remove ' + prof.name + ' and all of their quiz history?')) return;
+    tombstoneProfile(st, prof); // record the deletion so it propagates to the cloud
     st.profiles = st.profiles.filter(p => p.id !== prof.id);
     st.results = st.results.filter(r => r.profileId !== prof.id);
     if (st.currentProfileId === prof.id) st.currentProfileId = null;
@@ -1830,64 +1873,201 @@ function renderAdminData(body) {
   });
 }
 
-/* ------------------------------ Firebase sync (optional) ------------------- */
-let cloud = null; // {db} when configured
+/* ------------------------------ Firebase sync (optional) -------------------- */
+/* Web saving of member progress via Firestore. Local-first: everything works
+   offline and the cloud is a sync layer. Configure via firebase-config.js +
+   one-time Firestore setup (enable Anonymous sign-in, paste firestore.rules —
+   see README). */
+let cloud = null; // {db, uid} when configured and signed in
+let cloudState = 'off'; // off | connecting | ready | syncing | error
+let cloudLastSync = parseInt(localStorage.getItem('phfr_cloud_last') || '0', 10) || 0;
 let cloudTimer = null;
 
-function initCloudSync() {
+function initFirebaseSync() {
   const cfg = window.FIREBASE_CONFIG;
   if (!cfg || !cfg.apiKey || cfg.apiKey.indexOf('PASTE_') === 0) return; // not configured
+  cloudState = 'connecting';
+  refreshHeader();
   const load = src => new Promise((res, rej) => {
-    const s = document.createElement('script'); s.src = src;
-    s.onload = res; s.onerror = () => rej(new Error('Failed to load ' + src));
-    document.head.appendChild(s);
+    const sc = document.createElement('script'); sc.src = src;
+    sc.onload = res; sc.onerror = () => rej(new Error('Failed to load ' + src));
+    document.head.appendChild(sc);
   });
   load('https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js')
+    .then(() => load('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js'))
     .then(() => load('https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js'))
-    .then(() => {
+    .then(async () => {
       try {
         firebase.initializeApp(cfg);
-        cloud = { db: firebase.firestore() };
-        console.info('[phfr-hub] Cloud sync enabled.');
-        pullCloudOnce();
-      } catch (e) { console.warn('[phfr-hub] Firebase init failed:', e); }
+        const cred = await firebase.auth().signInAnonymously();
+        cloud = { db: firebase.firestore(), uid: cred.user.uid };
+        cloudState = 'ready';
+        console.info('[phfr-hub] Firebase sync enabled.');
+        pullFirebaseOnce().catch(e => console.warn('[phfr-hub] initial cloud pull failed:', e.message));
+      } catch (e) { cloudState = 'error'; console.warn('[phfr-hub] Firebase init failed:', e); }
+      refreshHeader();
     })
-    .catch(e => console.warn('[phfr-hub] Cloud sync unavailable:', e.message));
+    .catch(e => { cloudState = 'error'; console.warn('[phfr-hub] Firebase unavailable:', e.message); refreshHeader(); });
 }
 
-/** Merge cloud results/profiles into local store (additive, by id). Runs once at startup. */
-async function pullCloudOnce() {
-  if (!cloud) return;
+function cloudStatusText() {
+  if (!cloud) {
+    if (cloudState === 'connecting') return 'Connecting…';
+    if (cloudState === 'error') return 'Connection failed — check firebase-config.js';
+    return 'Off — no firebase-config.js';
+  }
+  return { ready: 'Connected', syncing: 'Syncing…', error: 'Last sync failed' }[cloudState] || cloudState;
+}
+
+/** Merge one cloud profile doc into the local store (additive, by id). */
+function mergeCloudProfile(st, d) {
+  if (!d || !d.id) return;
+  const p = st.profiles.find(x => x.id === d.id);
+  if (!p) {
+    st.profiles.push({
+      id: d.id, name: d.name, salt: d.salt, pinHash: d.pinHash,
+      created: d.created || Date.now(), seen: d.seen || {}
+    });
+  } else if (d.seen) {
+    // Refresh the seen map (latest writer wins per question).
+    p.seen = p.seen || {};
+    for (const k in d.seen) p.seen[k] = Math.max(p.seen[k] || 0, d.seen[k] || 0);
+  }
+}
+
+/** Apply cloud tombstones locally (a profile deleted elsewhere disappears here too). */
+function applyTombstones(st, cloudTombs) {
+  const localTombs = new Set((st.tombstones || []).map(t => t.id));
+  cloudTombs.forEach(t => {
+    if (localTombs.has(t.id)) return;
+    st.tombstones.push({ id: t.id, type: t.type || 'profile' });
+    const pi = st.profiles.findIndex(p => p.id === t.id);
+    if (pi !== -1) {
+      const pid = st.profiles[pi].id;
+      st.profiles.splice(pi, 1);
+      st.results = st.results.filter(r => r.profileId !== pid);
+      if (st.currentProfileId === pid) st.currentProfileId = null;
+    }
+  });
+}
+
+async function _allDocs(coll) {
+  const snap = await cloud.db.collection(coll).get();
+  const out = [];
+  snap.forEach(doc => { const d = doc.data(); if (d) out.push(d); });
+  return out;
+}
+
+/** Full pull: tombstones, profiles, results. Additive merge; never deletes local work. */
+async function pullFirebaseOnce() {
+  if (!cloud || cloudState === 'syncing') return;
+  cloudState = 'syncing';
   try {
     const st = getStore();
-    const usersSnap = await cloud.db.collection('users').get();
-    const haveP = new Set(st.profiles.map(p => p.id));
-    usersSnap.forEach(doc => { const d = doc.data(); if (d && d.id && !haveP.has(d.id)) { st.profiles.push(d); haveP.add(d.id); } });
-    const resSnap = await cloud.db.collection('quizResults').get();
+    if (!st.tombstones) st.tombstones = [];
+    const tombs = await _allDocs('phfr_tombstones');
+    const tombIds = new Set(tombs.map(t => t.id));
+    // Upload any local tombstones the cloud hasn't seen yet.
+    const batch0 = cloud.db.batch();
+    let n0 = 0;
+    st.tombstones.filter(t => !tombIds.has(t.id)).forEach(t => {
+      batch0.set(cloud.db.collection('phfr_tombstones').doc(t.id),
+        { id: t.id, type: t.type || 'profile', pinHash: t.pinHash || '', deletedAt: Date.now() }, { merge: true });
+      n0++;
+    });
+    if (n0) await batch0.commit();
+    applyTombstones(st, tombs);
+    const localTombIds = new Set(st.tombstones.map(t => t.id));
+    (await _allDocs('phfr_profiles')).forEach(d => { if (!localTombIds.has(d.id)) mergeCloudProfile(st, d); });
     const haveR = new Set(st.results.map(r => r.id));
-    resSnap.forEach(doc => { const d = doc.data(); if (d && d.id && !haveR.has(d.id)) { st.results.push(d); haveR.add(d.id); } });
-    localStorage.setItem(STORE_KEY, JSON.stringify(st));
+    (await _allDocs('phfr_results')).forEach(d => {
+      if (!d.id || haveR.has(d.id) || localTombIds.has(d.profileId)) return;
+      st.results.push(d); haveR.add(d.id);
+    });
+    saveStore(st);
+    cloudLastSync = Date.now();
+    try { localStorage.setItem('phfr_cloud_last', String(cloudLastSync)); } catch (e) {}
+    cloudState = 'ready';
     if (currentView === 'admin' && adminAuthed) renderAdmin($('#view'));
     if (currentView === 'progress') renderProgress($('#view'));
-  } catch (e) { console.warn('[phfr-hub] Cloud pull failed:', e.message); }
+    refreshHeader();
+  } catch (e) {
+    cloudState = 'error';
+    console.warn('[phfr-hub] Cloud pull failed:', e.message);
+  }
 }
 
-/** Debounced push of profiles + results to Firestore. Local-first; failures are silent. */
+/** Debounced push of local profiles + results. Local-first; failures are silent. */
 function scheduleCloudSync() {
-  if (!cloud) return;
+  if (!cloud && cloudState !== 'connecting') return;
   clearTimeout(cloudTimer);
-  cloudTimer = setTimeout(pushCloud, 1500);
+  cloudTimer = setTimeout(pushFirebase, 1500);
 }
 
-async function pushCloud() {
-  if (!cloud) return;
+async function pushFirebase() {
+  if (!cloud || cloudState === 'syncing') return;
+  cloudState = 'syncing';
   try {
     const st = getStore();
-    const batch = cloud.db.batch();
-    st.profiles.forEach(p => batch.set(cloud.db.collection('users').doc(p.id), p, { merge: true }));
-    st.results.forEach(r => batch.set(cloud.db.collection('quizResults').doc(r.id), r, { merge: true }));
-    await batch.commit();
-  } catch (e) { console.warn('[phfr-hub] Cloud push failed:', e.message); }
+    if (!st.tombstones) st.tombstones = [];
+    // 1. Tombstones first: fetch cloud's, apply locally, upload missing.
+    const tombs = await _allDocs('phfr_tombstones');
+    const tombIds = new Set(tombs.map(t => t.id));
+    const missingTombs = st.tombstones.filter(t => !tombIds.has(t.id));
+    if (missingTombs.length) {
+      const b = cloud.db.batch();
+      missingTombs.forEach(t => b.set(cloud.db.collection('phfr_tombstones').doc(t.id),
+        { id: t.id, type: t.type || 'profile', pinHash: t.pinHash || '', deletedAt: Date.now() }, { merge: true }));
+      await b.commit();
+      missingTombs.forEach(t => tombIds.add(t.id));
+    }
+    applyTombstones(st, tombs);
+    const deadIds = new Set(st.tombstones.map(t => t.id));
+
+    // 2. Upsert every live local profile (merge:true = insert or update).
+    const liveProfiles = st.profiles.filter(p => !deadIds.has(p.id));
+    for (let i = 0; i < liveProfiles.length; i += 400) {
+      const b = cloud.db.batch();
+      liveProfiles.slice(i, i + 400).forEach(p => b.set(
+        cloud.db.collection('phfr_profiles').doc(p.id),
+        { id: p.id, name: p.name, salt: p.salt, pinHash: p.pinHash || '', created: p.created || Date.now(), seen: p.seen || {} },
+        { merge: true }));
+      await b.commit();
+    }
+
+    // 3. Insert results the cloud doesn't have yet (results are immutable).
+    const cloudResIds = new Set((await _allDocs('phfr_results')).map(d => d.id));
+    const fresh = st.results.filter(r => r.id && !cloudResIds.has(r.id) && !deadIds.has(r.profileId));
+    for (let i = 0; i < fresh.length; i += 400) {
+      const b = cloud.db.batch();
+      fresh.slice(i, i + 400).forEach(r => b.set(
+        cloud.db.collection('phfr_results').doc(r.id), Object.assign({}, r), { merge: true }));
+      await b.commit();
+    }
+
+    // 4. Delete cloud profile docs for tombstoned ids. Idempotent: deleting
+    // a missing doc is a silent no-op. Tombstones stop them resurrecting.
+    for (const t of st.tombstones) {
+      await cloud.db.collection('phfr_profiles').doc(t.id).delete().catch(() => {});
+    }
+
+    saveStore(st);
+    cloudLastSync = Date.now();
+    try { localStorage.setItem('phfr_cloud_last', String(cloudLastSync)); } catch (e) {}
+    cloudState = 'ready';
+  } catch (e) {
+    cloudState = 'error';
+    console.warn('[phfr-hub] Cloud push failed:', e.message);
+  }
+}
+
+/** Record a local profile deletion so it propagates to the cloud.
+ * Mutates the passed store (caller saves); never re-reads the store itself. */
+function tombstoneProfile(st, prof) {
+  if (!st.tombstones) st.tombstones = [];
+  if (!st.tombstones.some(t => t.id === prof.id)) {
+    st.tombstones.push({ id: prof.id, type: 'profile', pinHash: prof.pinHash || '' });
+  }
 }
 
 /* ------------------------------ Init -------------------------------------- */
@@ -1898,6 +2078,6 @@ document.addEventListener('DOMContentLoaded', () => {
   $$('.nav-btn').forEach(b => b.addEventListener('click', () => navTo(b.dataset.view)));
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
   refreshHeader();
-  initCloudSync();
+  initFirebaseSync();
   navTo('home');
 });
