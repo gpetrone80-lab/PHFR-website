@@ -61,6 +61,17 @@ function toast(msg, kind) {
 
 function downloadFile(filename, content, mime) {
   const blob = new Blob([content], { type: mime || 'application/octet-stream' });
+  // On phones the native share sheet is far more reliable than a synthetic
+  // anchor click (mobile browsers often swallow programmatic downloads).
+  try {
+    if (navigator.share && navigator.canShare) {
+      const file = new File([blob], filename, { type: blob.type });
+      if (navigator.canShare({ files: [file] })) {
+        navigator.share({ files: [file], title: filename }).catch(() => {});
+        return;
+      }
+    }
+  } catch (e) {}
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = filename;
@@ -1366,13 +1377,14 @@ function findQuestionById(id) {
   return all.find(q => q.id === id) || null;
 }
 
-function renderTestDetail(root, rid) {
+function renderTestDetail(root, rid, opts) {
+  opts = opts || {};
   const s = getStore();
-  const p = currentProfile();
+  const p = opts.profile || currentProfile();
   const r = s.results.find(x => x.id === rid);
   if (!r || !p || r.profileId !== p.id) {
     toast('Test not found.', 'error');
-    navTo('progress');
+    if (opts.onBack) opts.onBack(); else navTo('progress');
     return;
   }
   const pass = r.score >= 80;
@@ -1419,7 +1431,7 @@ function renderTestDetail(root, rid) {
   }
 
   root.innerHTML =
-    '<button id="td-back" class="text-sm text-phfr-navy dark:text-sky-300 font-semibold mb-3">← Back to My Progress</button>' +
+    '<button id="td-back" class="text-sm text-phfr-navy dark:text-sky-300 font-semibold mb-3">' + esc(opts.backLabel || '← Back to My Progress') + '</button>' +
     '<div class="bg-white dark:bg-slate-900 rounded-2xl shadow p-6 mb-4 text-center">' +
     '<h2 class="text-xl font-bold mb-1">Test Review</h2>' +
     '<p class="text-sm text-slate-500 mb-3">' + fmtDate(r.date) + ' · ' + esc(CAT_LABELS[r.category] || r.category) +
@@ -1431,10 +1443,10 @@ function renderTestDetail(root, rid) {
     (pass ? 'PASS' : 'Below 80% — keep studying') + '</span></div>' +
     '<div class="bg-white dark:bg-slate-900 rounded-2xl shadow p-5 mb-4"><h3 class="font-bold mb-3">Question-by-question (' + qCount + ')</h3>' +
     '<div class="space-y-3">' + body + '</div></div>' +
-    '<div class="flex gap-2 justify-center"><button id="td-retake" class="px-5 py-2.5 rounded-xl bg-phfr-navy text-white font-bold">Retake this quiz</button></div>';
+    (opts.hideRetake ? '' : '<div class="flex gap-2 justify-center"><button id="td-retake" class="px-5 py-2.5 rounded-xl bg-phfr-navy text-white font-bold">Retake this quiz</button></div>');
 
-  $('#td-back', root).addEventListener('click', () => navTo('progress'));
-  $('#td-retake', root).addEventListener('click', () => startQuizFlow(r.category, r.requested, r.sopFilter || null, !!r.adaptive));
+  $('#td-back', root).addEventListener('click', () => { if (opts.onBack) opts.onBack(); else navTo('progress'); });
+  if (!opts.hideRetake) $('#td-retake', root).addEventListener('click', () => startQuizFlow(r.category, r.requested, r.sopFilter || null, !!r.adaptive));
 }
 
 function statCard(icon, val, label) {
@@ -1446,6 +1458,8 @@ function statCard(icon, val, label) {
 /* ------------------------------ Admin portal ------------------------------ */
 let adminAuthed = false;
 let adminTab = 'dashboard';
+let adminMemberId = null; // admin Users tab: member being inspected (null = list)
+let adminMemberRid = null; // admin Users tab: member's test being reviewed (null = history)
 
 async function renderAdmin(root) {
   const s = getStore();
@@ -1501,10 +1515,14 @@ async function renderAdmin(root) {
       (adminTab === t[0] ? 'bg-phfr-navy text-white' : 'bg-white dark:bg-slate-900 shadow') + '">' + t[1] + '</button>').join('') +
     '</div><div id="adm-body"></div>';
   $('#adm-lock').addEventListener('click', () => { adminAuthed = false; toast('Admin portal locked.'); renderAdmin(root); });
-  $$('[data-admtab]', root).forEach(b => b.addEventListener('click', () => { adminTab = b.dataset.admtab; renderAdmin(root); }));
+  $$('[data-admtab]', root).forEach(b => b.addEventListener('click', () => { adminTab = b.dataset.admtab; adminMemberId = null; adminMemberRid = null; renderAdmin(root); }));
   const body = $('#adm-body', root);
   if (adminTab === 'dashboard') renderAdminDashboard(body);
-  else if (adminTab === 'users') renderAdminUsers(body);
+  else if (adminTab === 'users') {
+    if (adminMemberRid) renderAdminMemberTest(body);
+    else if (adminMemberId) renderAdminMember(body);
+    else renderAdminUsers(body);
+  }
   else if (adminTab === 'docs') renderAdminDocs(body);
   else if (adminTab === 'cloud') renderAdminCloud(body);
   else renderAdminData(body);
@@ -1587,6 +1605,7 @@ function renderAdminUsers(body) {
       '<div class="bg-white dark:bg-slate-900 rounded-xl shadow p-4 flex items-center justify-between gap-2">' +
       '<div><div class="font-bold">' + esc(p.name) + '</div><div class="text-xs text-slate-500">Created ' + fmtDate(p.created) + ' · ' + profileResults(p.id).length + ' quizzes</div></div>' +
       '<div class="flex gap-2">' +
+      '<button data-view="' + esc(p.id) + '" class="text-xs px-3 py-1.5 rounded-lg bg-phfr-navy text-white font-semibold">View</button>' +
       '<button data-reset="' + esc(p.id) + '" class="text-xs px-3 py-1.5 rounded-lg border border-amber-500 text-amber-700 dark:text-amber-400 font-semibold">Reset PIN</button>' +
       '<button data-del="' + esc(p.id) + '" class="text-xs px-3 py-1.5 rounded-lg border border-red-500 text-red-600 dark:text-red-400 font-semibold">Remove</button>' +
       '</div></div>').join('') + '</div>';
@@ -1601,6 +1620,10 @@ function renderAdminUsers(body) {
     st.profiles.push({ id: uid('u'), name: name, salt: salt, pinHash: await sha256Hex(pin, salt), created: Date.now() });
     saveStore(st); scheduleCloudSync(); toast('Added ' + name + '.'); renderAdminUsers(body);
   });
+  $$('[data-view]', body).forEach(b => b.addEventListener('click', () => {
+    adminMemberId = b.dataset.view; adminMemberRid = null;
+    renderAdmin($('#view'));
+  }));
   $$('[data-reset]', body).forEach(b => b.addEventListener('click', async () => {
     const pin = prompt('Enter a new 4-digit PIN for this member:');
     if (pin === null) return;
@@ -1623,6 +1646,50 @@ function renderAdminUsers(body) {
     if (st.currentProfileId === prof.id) st.currentProfileId = null;
     saveStore(st); scheduleCloudSync(); refreshHeader(); toast('Removed ' + prof.name + '.'); renderAdminUsers(body);
   }));
+}
+
+/* ------------------------- Admin: member inspection ----------------------- */
+/* Training captains can open any member, see their quiz history, and review
+   each test question-by-question (right/wrong per question). Read-only: no
+   retake, no edits — the member's own Progress view is unchanged. */
+function renderAdminMember(body) {
+  const s = getStore();
+  const p = s.profiles.find(x => x.id === adminMemberId);
+  if (!p) { adminMemberId = null; renderAdmin($('#view')); return; }
+  const res = profileResults(p.id);
+  const total = res.length;
+  const avg = total ? Math.round(res.reduce((a, r) => a + r.score, 0) / total) : 0;
+  const best = total ? Math.max.apply(null, res.map(r => r.score)) : 0;
+  body.innerHTML =
+    '<button id="am-back" class="text-sm text-phfr-navy dark:text-sky-300 font-semibold mb-3">← All members</button>' +
+    '<div class="bg-white dark:bg-slate-900 rounded-2xl shadow p-5 mb-4"><h3 class="font-bold text-lg">👤 ' + esc(p.name) + '</h3>' +
+    '<p class="text-xs text-slate-500">Member since ' + fmtDate(p.created) + '</p></div>' +
+    '<div class="grid grid-cols-3 gap-3 mb-4">' +
+    statCard('📝', total, 'Quizzes taken') + statCard('📈', avg + '%', 'Average score') + statCard('🏆', best + '%', 'Best score') +
+    '</div>' +
+    '<div class="bg-white dark:bg-slate-900 rounded-2xl shadow p-5"><h3 class="font-bold mb-1">Quiz history</h3>' +
+    '<p class="text-xs text-slate-500 mb-3">Tap any row to review that test question-by-question.</p>' +
+    (res.length
+      ? '<div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr class="text-left text-xs uppercase text-slate-500 border-b border-slate-200 dark:border-slate-700"><th class="py-2 pr-2">Date</th><th class="py-2 pr-2">Category</th><th class="py-2 pr-2">Score</th><th class="py-2 pr-2">Result</th><th class="py-2"></th></tr></thead><tbody>' +
+        res.map(r => '<tr data-rid="' + r.id + '" title="Tap to review this test" class="border-b border-slate-100 dark:border-slate-800 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60"><td class="py-2 pr-2 whitespace-nowrap">' + fmtDate(r.date) + '</td><td class="py-2 pr-2">' + esc(CAT_LABELS[r.category] || r.category || '') + (r.sopFilter ? ' <span class="text-xs text-slate-500">(' + esc(r.sopFilter) + ')</span>' : '') + '</td><td class="py-2 pr-2 font-bold">' + r.score + '% <span class="font-normal text-slate-500">(' + r.correct + '/' + r.total + ')</span></td><td class="py-2 pr-2">' + (r.score >= 80 ? '<span class="text-green-700 dark:text-green-400 font-semibold">Pass</span>' : '<span class="text-amber-700 dark:text-amber-400 font-semibold">Study</span>') + '</td><td class="py-2 text-phfr-navy dark:text-sky-300 font-semibold whitespace-nowrap">Review ›</td></tr>').join('') +
+        '</tbody></table></div>'
+      : '<p class="text-sm text-slate-500">No quiz history yet.</p>') +
+    '</div>';
+  $('#am-back', body).addEventListener('click', () => { adminMemberId = null; adminMemberRid = null; renderAdmin($('#view')); });
+  $$('tr[data-rid]', body).forEach(tr => tr.addEventListener('click', () => { adminMemberRid = tr.dataset.rid; renderAdmin($('#view')); }));
+}
+
+function renderAdminMemberTest(body) {
+  const s = getStore();
+  const p = s.profiles.find(x => x.id === adminMemberId);
+  if (!p) { adminMemberId = null; adminMemberRid = null; renderAdmin($('#view')); return; }
+  const rid = adminMemberRid;
+  renderTestDetail(body, rid, {
+    profile: p,
+    backLabel: '← Back to ' + p.name + '\u2019s history',
+    onBack: () => { adminMemberRid = null; renderAdmin($('#view')); },
+    hideRetake: true
+  });
 }
 
 /* ------------------------- Admin: documents & Q-gen ----------------------- */
@@ -1858,7 +1925,7 @@ function renderAdminData(body) {
     const st = getStore();
     const nameOf = id => { const p = st.profiles.find(p => p.id === id); return p ? p.name : '(removed)'; };
     const rows = [['Name', 'Date', 'Category', 'SOP filter', 'Correct', 'Total', 'Score %', 'Missed count']];
-    st.results.forEach(r => rows.push([nameOf(r.profileId), new Date(r.date).toISOString(), CAT_LABELS[r.category] || r.category, r.sopFilter || '', r.correct, r.total, r.score, r.missed.length]));
+    st.results.forEach(r => rows.push([nameOf(r.profileId), r.date ? new Date(r.date).toISOString() : '', CAT_LABELS[r.category] || r.category || '', r.sopFilter || '', r.correct || 0, r.total || 0, r.score || 0, (r.missed || []).length]));
     downloadFile('phfr-hub-scores-' + new Date().toISOString().slice(0, 10) + '.csv', rows.map(r => r.map(csvCell).join(',')).join('\n'), 'text/csv');
     toast('CSV exported.');
   });
