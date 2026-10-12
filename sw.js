@@ -1,6 +1,6 @@
 // Service worker for the PHFR SOP & EMS Reference Hub.
 // Cache-first for the app shell; bump CACHE_VERSION when shipping updates.
-const CACHE_VERSION = 'phfr-hub-v3';
+const CACHE_VERSION = 'phfr-hub-v4';
 const APP_SHELL = [
   './',
   './index.html',
