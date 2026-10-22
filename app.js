@@ -1527,7 +1527,9 @@ async function renderAdmin(root) {
       '<p class="text-sm text-slate-600 dark:text-slate-400 mb-4 text-center">Restricted to training captains.</p>' +
       '<label class="block text-sm font-medium mb-1">Admin password</label>' +
       '<input id="adm-pass" type="password" class="w-full mb-4 px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800">' +
-      '<button id="adm-login" class="w-full py-2.5 rounded-lg bg-phfr-navy text-white font-bold">Log in</button></div>';
+      '<button id="adm-login" class="w-full py-2.5 rounded-lg bg-phfr-navy text-white font-bold">Log in</button>' +
+      '<button id="adm-forgot" class="w-full mt-3 text-sm font-semibold underline">Forgot password? Reset admin password only</button>' +
+      '<p class="text-xs text-slate-500 dark:text-slate-400 mt-2 text-center">Reset removes only the admin password on this device. Profiles, scores, documents, and questions are kept.</p></div>';
     const tryLogin = async () => {
       const st = getStore();
       const h = await sha256Hex($('#adm-pass').value, st.admin.salt);
@@ -1536,6 +1538,18 @@ async function renderAdmin(root) {
     };
     $('#adm-login').addEventListener('click', tryLogin);
     $('#adm-pass').addEventListener('keydown', e => { if (e.key === 'Enter') tryLogin(); });
+    $('#adm-forgot').addEventListener('click', () => {
+      const c = confirm('Reset the admin password on THIS device?\n\nOnly the admin password will be removed — all profiles, quiz results, documents, and custom questions stay. You will then create a new admin password.');
+      if (!c) return;
+      const typed = prompt('Type RESET to confirm:');
+      if (typed !== 'RESET') return toast('Reset cancelled.', 'error');
+      const st = getStore();
+      st.admin = null;
+      saveStore(st);
+      adminAuthed = false;
+      toast('Admin password removed. Create a new one.');
+      renderAdmin(root);
+    });
     return;
   }
   // Authenticated admin shell
